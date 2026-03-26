@@ -3,6 +3,7 @@ pragma solidity >=0.8.13 <0.9.0;
 
 import {MonadVm} from "./MonadVm.sol";
 import {IMonadStaking} from "./interfaces/IMonadStaking.sol";
+import {IReserveBalance} from "./interfaces/IReserveBalance.sol";
 
 /// @title MonadStdConstants
 /// @notice Shared Monad constants and typed handles (forge-std style).
@@ -13,9 +14,15 @@ abstract contract MonadStdConstants {
     /// @notice Monad staking precompile address.
     address internal constant STAKING_ADDRESS = address(0x1000);
 
+    /// @notice Monad reserve balance precompile address.
+    address internal constant RESERVE_BALANCE_ADDRESS = address(0x1001);
+
     /// @notice Typed MonadVm handle bound to `MONAD_VM_ADDRESS`.
     MonadVm internal constant MONAD_VM = MonadVm(MONAD_VM_ADDRESS);
 
     /// @notice Typed Monad staking precompile handle bound to `STAKING_ADDRESS`.
     IMonadStaking internal constant STAKING = IMonadStaking(STAKING_ADDRESS);
+
+    /// @notice Typed Monad reserve balance precompile handle bound to `RESERVE_BALANCE_ADDRESS`.
+    IReserveBalance internal constant RESERVE_BALANCE = IReserveBalance(RESERVE_BALANCE_ADDRESS);
 }
