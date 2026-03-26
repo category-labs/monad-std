@@ -16,6 +16,10 @@ forge install category-labs/monad-std
 
 [`src/interfaces/IMonadStaking.sol`](./src/interfaces/IMonadStaking.sol) defines the public interface for the staking precompile at `0x1000`.
 
+### `IReserveBalance`
+
+[`src/interfaces/IReserveBalance.sol`](./src/interfaces/IReserveBalance.sol) defines the public interface for the reserve balance precompile at `0x1001` ([MIP-4](https://github.com/monad-crypto/MIPs/blob/main/MIPS/MIP-4.md)).
+
 ### `MonadVm`
 
 [`src/MonadVm.sol`](./src/MonadVm.sol) defines Monad Foundry cheatcodes exposed by Monad's VM interface.
@@ -26,8 +30,10 @@ forge install category-labs/monad-std
 
 - `MONAD_VM_ADDRESS`
 - `STAKING_ADDRESS`
+- `RESERVE_BALANCE_ADDRESS`
 - `MONAD_VM`
 - `STAKING`
+- `RESERVE_BALANCE`
 
 ### `MonadBase` and `MonadTest`
 
@@ -35,6 +41,7 @@ forge install category-labs/monad-std
 
 - `monadVm` alias for `MONAD_VM`
 - `staking` alias for `STAKING`
+- `reserveBalance` alias for `RESERVE_BALANCE`
 - `MonadTest` as a convenience aggregate base
 
 ## Example Usage
