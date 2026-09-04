@@ -1,8 +1,8 @@
 # Monad Standard Library • [![CI status](https://github.com/category-labs/monad-std/actions/workflows/test.yml/badge.svg)](https://github.com/category-labs/monad-std/actions/workflows/test.yml)
 
-Monad Standard Library (`monad-std`) is a collection of Monad-specific interfaces and testing helpers for [Foundry](https://github.com/foundry-rs/foundry).
+Monad Standard Library (`monad-std`) is a collection of Monad-specific interfaces, storage utilities, and testing helpers for [Foundry](https://github.com/foundry-rs/foundry).
 
-It provides Solidity interfaces that track Monad runtime behavior and lightweight base contracts for ergonomic test usage.
+It provides Solidity interfaces that track Monad runtime behavior, helpers for Monad's page-based storage model, and lightweight base contracts for ergonomic test usage.
 
 ## Install
 
@@ -18,7 +18,19 @@ forge install category-labs/monad-std
 
 ### `IReserveBalance`
 
-[`src/interfaces/IReserveBalance.sol`](./src/interfaces/IReserveBalance.sol) defines the public interface for the reserve balance precompile at `0x1001` ([MIP-4](https://github.com/monad-crypto/MIPs/blob/main/MIPS/MIP-4.md)).
+[`src/interfaces/IReserveBalance.sol`](./src/interfaces/IReserveBalance.sol) defines the public interface for the reserve balance precompile at `0x1001` ([MIP-4](https://github.com/monad-crypto/MIPs/blob/main/MIPs/MIP-4.md)).
+
+### `Pages`
+
+[`src/utils/storage/Pages.sol`](./src/utils/storage/Pages.sol) defines the `PageIndex` type, the `PageHandle` type that derives a page from its storage slot, and checked slot arithmetic for 128-slot [MIP-8](https://github.com/monad-crypto/MIPs/blob/6e78a6ac39547882f9905fba86d2c794eb1768ef/MIPs/MIP-8.md) pages. Import it as `monad-std/utils/storage/Pages.sol`.
+
+This utility has not had an independent audit.
+
+### `Words`
+
+[`src/utils/storage/Words.sol`](./src/utils/storage/Words.sol) defines the `Word` storage pointer and `Words.ref`, which turns a slot number into a pointer, so storage laid out by slot is read and written without assembly at the call site. Import it as `monad-std/utils/storage/Words.sol`.
+
+Like `Pages`, it has not had an independent audit.
 
 ### `MonadVm`
 
