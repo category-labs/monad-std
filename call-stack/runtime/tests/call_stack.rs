@@ -90,6 +90,7 @@ struct Call {
     is_static: bool,
     allowance: u64,
     spent: u64,
+    output_size: usize,
     exceptional_halt: bool,
 }
 
@@ -123,6 +124,7 @@ impl<CTX> Inspector<CTX> for Trace {
             is_static: inputs.is_static,
             allowance: inputs.gas_limit,
             spent: outcome.gas().total_gas_spent(),
+            output_size: outcome.output().len(),
             exceptional_halt: outcome.result.result.is_halt(),
         });
     }
@@ -222,10 +224,10 @@ impl Runtime {
         self.deploy(initcode).0
     }
 
-    fn read(&mut self, target: Address, n: U256) -> (ExecutionResult<MonadHaltReason>, Trace) {
+    fn observe(&mut self, target: Address, n: U256) -> (ExecutionResult<MonadHaltReason>, Trace) {
         self.call(
             target,
-            calldata("read(address,uint256)", &[address_word(self.helper), n]),
+            calldata("observe(address,uint256)", &[address_word(self.helper), n]),
         )
     }
 }
@@ -246,43 +248,42 @@ fn expected(senders: &[Address], n: U256) -> Vec<U256> {
     vec![U256::from(senders.len() - 1), caller]
 }
 
+fn query_calldata(helper: Address, n: U256) -> [Vec<u8>; 2] {
+    [
+        calldata("callStackDepth(address)", &[address_word(helper)]),
+        calldata("callerN(address,uint256)", &[address_word(helper), n]),
+    ]
+}
+
 #[test]
 fn top_level_wrapper_has_exactly_one_helper_frame() {
     for optimized in [false, true] {
         for inspected in [false, true] {
             let mut vm = Runtime::new(optimized, inspected);
             for n in indices(0) {
-                let (result, trace) = vm.read(vm.application, n);
-                assert_eq!(output_words(&result), expected(&[USER], n));
-                if inspected {
-                    assert_eq!(trace.calls.len(), 2, "application plus helper only");
-                    let helper = &trace.calls[0];
-                    assert_eq!(helper.code, vm.helper);
-                    assert_eq!(helper.caller, vm.application);
-                    assert_eq!(helper.scheme, CallScheme::StaticCall);
-                    assert!(helper.is_static);
-                    assert_eq!(helper.allowance, 2_000);
-                    assert!(helper.spent < 300, "{helper:?}");
-                    assert!(trace
-                        .extensions
-                        .iter()
-                        .all(|&(depth, cost)| depth == 1 && cost == 2));
-                    assert_eq!(trace.extensions.len(), if n.is_zero() { 2 } else { 1 });
+                for (operation, data) in query_calldata(vm.helper, n).into_iter().enumerate() {
+                    let (result, trace) = vm.call(vm.application, data);
+                    assert_eq!(output_words(&result), [expected(&[USER], n)[operation]]);
+                    if inspected {
+                        assert_eq!(trace.calls.len(), 2, "application plus helper only");
+                        let helper = &trace.calls[0];
+                        assert_eq!(helper.code, vm.helper);
+                        assert_eq!(helper.caller, vm.application);
+                        assert_eq!(helper.scheme, CallScheme::StaticCall);
+                        assert!(helper.is_static);
+                        assert_eq!(helper.allowance, 2_000);
+                        assert_eq!(helper.output_size, 32);
+                        assert!(helper.spent < 300, "{helper:?}");
+                        assert!(trace
+                            .extensions
+                            .iter()
+                            .all(|&(depth, cost)| depth == 1 && cost == 2));
+                        // The depth operation executes no CALLERN; out-of-range caller
+                        // indices also return without executing CALLERN.
+                        let extension_count = if operation == 1 && n.is_zero() { 2 } else { 1 };
+                        assert_eq!(trace.extensions.len(), extension_count);
+                    }
                 }
-                let result = vm
-                    .call(
-                        vm.application,
-                        calldata("depth(address)", &[address_word(vm.helper)]),
-                    )
-                    .0;
-                assert_eq!(output_words(&result), [U256::ZERO]);
-                let result = vm
-                    .call(
-                        vm.application,
-                        calldata("callerAt(address,uint256)", &[address_word(vm.helper), n]),
-                    )
-                    .0;
-                assert_eq!(output_words(&result), [expected(&[USER], n)[1]]);
             }
         }
     }
@@ -313,7 +314,7 @@ fn router_proxy_and_repeated_delegate_callers() {
                 }
             }
             for n in indices(1) {
-                let (result, _) = vm.read(proxy, n);
+                let (result, _) = vm.observe(proxy, n);
                 assert_eq!(output_words(&result), expected(&[USER, USER], n));
             }
         }
@@ -385,22 +386,30 @@ fn returning_and_reverting_frames_do_not_leak_context() {
 fn helper_rejects_top_level_and_invalid_calldata() {
     for optimized in [false, true] {
         let mut vm = Runtime::new(optimized, true);
-        for n in indices(0) {
-            let (result, _) = vm.call(vm.helper, calldata("readForInvoker(uint256)", &[n]));
+        let mut requests = vec![calldata("callStackDepth()", &[])];
+        requests.extend(
+            indices(0)
+                .into_iter()
+                .map(|n| calldata("callerN(uint256)", &[n])),
+        );
+        for valid in requests {
+            let (result, _) = vm.call(vm.helper, valid.clone());
             assert_revert(&result, "NoInvoker()", &[]);
-        }
-        let valid = calldata("readForInvoker(uint256)", &[U256::ZERO]);
-        let mut invalid = (0..valid.len())
-            .map(|len| valid[..len].to_vec())
-            .collect::<Vec<_>>();
-        invalid.push([valid.as_slice(), &[0]].concat());
-        invalid.push(calldata("wrong(uint256)", &[U256::ZERO]));
-        for data in invalid {
-            let (result, _) = vm.call(vm.helper, data);
+            let mut invalid = (0..valid.len())
+                .map(|len| valid[..len].to_vec())
+                .collect::<Vec<_>>();
+            invalid.push([valid.as_slice(), &[0]].concat());
+            for data in invalid {
+                let (result, _) = vm.call(vm.helper, data);
+                assert_revert(&result, "InvalidCalldata()", &[]);
+            }
+            let (result, _) = vm.execute(TxKind::Call(vm.helper), valid, U256::from(1));
             assert_revert(&result, "InvalidCalldata()", &[]);
         }
-        let (result, _) = vm.execute(TxKind::Call(vm.helper), valid, U256::from(1));
-        assert_revert(&result, "InvalidCalldata()", &[]);
+        for signature in ["wrong(uint256)", "readForInvoker(uint256)"] {
+            let (result, _) = vm.call(vm.helper, calldata(signature, &[U256::ZERO]));
+            assert_revert(&result, "InvalidCalldata()", &[]);
+        }
     }
 }
 
@@ -408,38 +417,39 @@ fn helper_rejects_top_level_and_invalid_calldata() {
 fn missing_failed_malformed_and_untrusted_helpers_are_distinct() {
     let mut vm = Runtime::new(true, true);
     for absent in [Address::ZERO, USER, Address::repeat_byte(0xab)] {
-        let (result, _) = vm.call(
-            vm.application,
-            calldata("read(address,uint256)", &[address_word(absent), U256::ZERO]),
-        );
-        assert_revert(&result, "MissingHelper(address)", &[address_word(absent)]);
-    }
-    let bad = vm.deploy_fixture("BadHelper", &[]);
-    for n in 0..12 {
-        let (result, _) = vm.call(
-            vm.application,
-            calldata("read(address,uint256)", &[address_word(bad), U256::from(n)]),
-        );
-        if n == 6 {
-            assert_eq!(output_words(&result), [U256::ZERO, U256::ZERO]);
-        } else {
-            let error = if n < 6 || n == 10 {
-                "InvalidHelperResponse(address)"
-            } else {
-                "HelperCallFailed(address)"
-            };
-            assert_revert(&result, error, &[address_word(bad)]);
+        for data in query_calldata(absent, U256::MAX) {
+            let (result, _) = vm.call(vm.application, data);
+            assert_revert(&result, "MissingHelper(address)", &[address_word(absent)]);
         }
     }
-    let (result, _) = vm.call(
-        vm.application,
-        calldata("validate(address)", &[address_word(bad)]),
-    );
-    assert_revert(
-        &result,
-        "UnexpectedHelperCode(address)",
-        &[address_word(bad)],
-    );
+    for mode in 0..12 {
+        let bad = vm.deploy_fixture("BadHelper", &[U256::from(mode)]);
+        for (operation, data) in query_calldata(bad, U256::MAX).into_iter().enumerate() {
+            let (result, _) = vm.call(vm.application, data);
+            if mode == 6 {
+                assert_eq!(output_words(&result), [U256::ZERO]);
+            } else if mode == 5 && operation == 0 {
+                // A full-width uint256 is valid for depth, but not for an address.
+                assert_eq!(output_words(&result), [U256::from(1) << 160]);
+            } else {
+                let error = if mode < 6 || mode == 10 {
+                    "InvalidHelperResponse(address)"
+                } else {
+                    "HelperCallFailed(address)"
+                };
+                assert_revert(&result, error, &[address_word(bad)]);
+            }
+        }
+        let (result, _) = vm.call(
+            vm.application,
+            calldata("validate(address)", &[address_word(bad)]),
+        );
+        assert_revert(
+            &result,
+            "UnexpectedHelperCode(address)",
+            &[address_word(bad)],
+        );
+    }
     let (result, _) = vm.call(
         vm.application,
         calldata("validate(address)", &[address_word(vm.helper)]),
@@ -457,18 +467,20 @@ fn unsupported_monad_revisions_fail_with_bounded_gas() {
         ] {
             let mut vm = Runtime::new(optimized, true);
             vm.spec = spec;
-            let (result, trace) = vm.read(vm.application, U256::ZERO);
-            assert_revert(
-                &result,
-                "HelperCallFailed(address)",
-                &[address_word(vm.helper)],
-            );
-            assert_eq!(trace.calls[0].allowance, 2_000);
-            assert!(trace.calls[0].exceptional_halt);
-            // REVM reports work done before INVALID in the child outcome. The parent
-            // charges the full allowance for the exceptional halt, retaining its own gas.
-            assert!(trace.calls.last().unwrap().spent > 2_000);
-            assert!(trace.calls.last().unwrap().spent < 20_000);
+            for data in query_calldata(vm.helper, U256::MAX) {
+                let (result, trace) = vm.call(vm.application, data);
+                assert_revert(
+                    &result,
+                    "HelperCallFailed(address)",
+                    &[address_word(vm.helper)],
+                );
+                assert_eq!(trace.calls[0].allowance, 2_000);
+                assert!(trace.calls[0].exceptional_halt);
+                // REVM reports work done before INVALID in the child outcome. The parent
+                // charges the full allowance for the exceptional halt, retaining its own gas.
+                assert!(trace.calls.last().unwrap().spent > 2_000);
+                assert!(trace.calls.last().unwrap().spent < 20_000);
+            }
         }
     }
 }
@@ -476,34 +488,30 @@ fn unsupported_monad_revisions_fail_with_bounded_gas() {
 #[test]
 fn ethereum_runtime_fails_explicitly_without_exhausting_parent_gas() {
     let vm = Runtime::new(true, true);
-    let tx = TxEnv::builder()
-        .caller(USER)
-        .nonce(vm.db.cache.accounts[&USER].info.nonce)
-        .to(vm.application)
-        .data(
-            calldata(
-                "read(address,uint256)",
-                &[address_word(vm.helper), U256::ZERO],
-            )
-            .into(),
-        )
-        .gas_limit(GAS_LIMIT)
-        .gas_price(0)
-        .build_fill();
-    let context = Context::mainnet()
-        .with_db(vm.db)
-        .modify_cfg_chained(|cfg| cfg.set_spec_and_mainnet_gas_params(SpecId::CANCUN));
-    let mut trace = Trace::default();
-    let mut evm = context.build_mainnet_with_inspector(&mut trace);
-    let result = evm.inspect_one_tx(tx).unwrap();
-    assert_revert(
-        &result,
-        "HelperCallFailed(address)",
-        &[address_word(vm.helper)],
-    );
-    assert_eq!(trace.calls[0].allowance, 2_000);
-    assert!(trace.calls[0].exceptional_halt);
-    assert!(trace.calls.last().unwrap().spent < 10_000);
+    for data in query_calldata(vm.helper, U256::MAX) {
+        let tx = TxEnv::builder()
+            .caller(USER)
+            .nonce(vm.db.cache.accounts[&USER].info.nonce)
+            .to(vm.application)
+            .data(data.into())
+            .gas_limit(GAS_LIMIT)
+            .gas_price(0)
+            .build_fill();
+        let context = Context::mainnet()
+            .with_db(vm.db.clone())
+            .modify_cfg_chained(|cfg| cfg.set_spec_and_mainnet_gas_params(SpecId::CANCUN));
+        let mut trace = Trace::default();
+        let mut evm = context.build_mainnet_with_inspector(&mut trace);
+        let result = evm.inspect_one_tx(tx).unwrap();
+        assert_revert(
+            &result,
+            "HelperCallFailed(address)",
+            &[address_word(vm.helper)],
+        );
+        assert_eq!(trace.calls[0].allowance, 2_000);
+        assert!(trace.calls[0].exceptional_halt);
+        assert!(trace.calls.last().unwrap().spent < 10_000);
+    }
 }
 
 #[test]
@@ -521,7 +529,18 @@ fn standalone_native_reference_matches_adjusted_helper_in_same_frame() {
                     want.extend(expected(&senders, n));
                     assert_eq!(output_words(&result), want);
                     assert!(trace.extensions.iter().all(|&(_, gas)| gas == 2));
-                    assert!(trace.extensions.len() >= 3);
+                    assert_eq!(
+                        trace.extensions.len(),
+                        if n < U256::from(senders.len()) { 5 } else { 4 }
+                    );
+                    assert_eq!(
+                        trace
+                            .calls
+                            .iter()
+                            .filter(|call| call.code == vm.helper)
+                            .count(),
+                        2
+                    );
                 }
             }
         }
@@ -531,11 +550,9 @@ fn standalone_native_reference_matches_adjusted_helper_in_same_frame() {
 #[test]
 fn representative_wrapper_gas() {
     for optimized in [true, false] {
-        for (name, signature, with_index, calls) in [
-            ("read", "measureRead(address,uint256)", true, 2),
-            ("depth", "measureDepth(address)", false, 2),
-            ("callerAt", "measureCaller(address,uint256)", true, 2),
-            ("separate", "measureSeparate(address,uint256)", true, 4),
+        for (name, signature, with_index) in [
+            ("callStackDepth", "measureCallStackDepth(address)", false),
+            ("callerN", "measureCallerN(address,uint256)", true),
         ] {
             let mut vm = Runtime::new(optimized, true);
             let mut args = vec![address_word(vm.helper)];
@@ -549,7 +566,7 @@ fn representative_wrapper_gas() {
                 .iter()
                 .filter(|call| call.code == vm.helper)
                 .collect::<Vec<_>>();
-            assert_eq!(helpers.len(), calls);
+            assert_eq!(helpers.len(), 2);
             assert!(helpers
                 .iter()
                 .all(|call| call.allowance == 2_000 && call.spent < 300));

@@ -12,7 +12,7 @@ library CallStack {
     uint256 internal constant HELPER_GAS_LIMIT = 2_000;
 
     /// @notice Runtime hash of the optimized helper in call-stack/artifacts/CallStack.json.
-    bytes32 internal constant HELPER_CODE_HASH = 0x834cf0edc80c8a7287345bdc0500c3d4025257f8ee905f66b44d4682b521973c;
+    bytes32 internal constant HELPER_CODE_HASH = 0x11188db450f6bf253c64f447fa794256348f5ff22cb744654e0f2bb0354df20a;
 
     error MissingHelper(address helper);
     error HelperCallFailed(address helper);
@@ -20,40 +20,37 @@ library CallStack {
     error UnexpectedHelperCode(address helper);
 
     /// @notice Checks the configured helper against the published optimized runtime.
-    /// @dev Call during application construction or configuration; read() only checks code presence.
+    /// @dev Call during application construction or configuration; queries only check code presence.
     function validateHelper(address helper) internal view {
         if (helper.code.length == 0) revert MissingHelper(helper);
         if (helper.codehash != HELPER_CODE_HASH) revert UnexpectedHelperCode(helper);
     }
 
     /// @notice Returns the executing application's zero-based call depth.
-    function depth(address helper) internal view returns (uint256 result) {
-        (result,) = read(helper, 0);
+    function callStackDepth(address helper) internal view returns (uint256) {
+        return _query(helper, abi.encodeWithSelector(ICallStack.callStackDepth.selector));
     }
 
     /// @notice Returns the CALLER value n frames above the executing application, or zero.
-    /// @dev callerAt(helper, 0) equals msg.sender. Delegatecalls may repeat caller values.
-    function callerAt(address helper, uint256 n) internal view returns (address ancestor) {
-        (, ancestor) = read(helper, n);
+    /// @dev callerN(helper, 0) equals msg.sender. Delegatecalls may repeat caller values.
+    function callerN(address helper, uint256 n) internal view returns (address) {
+        uint256 ancestor = _query(helper, abi.encodeWithSelector(ICallStack.callerN.selector, n));
+        if (ancestor > type(uint160).max) revert InvalidHelperResponse(helper);
+        // The range check above proves that the address cast cannot truncate.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        return address(uint160(ancestor));
     }
 
-    /// @notice Reads depth and an ancestor caller with one bounded STATICCALL.
-    /// @dev Validate the helper's identity when configuring it. A decodable response is not proof
+    /// @dev Executes one operation with a bounded STATICCALL and a single-word response.
+    /// Validate the helper's identity when configuring it. A decodable response is not proof
     /// of identity. Unsupported opcodes, exhausted gas and other call failures revert explicitly.
-    function read(address helper, uint256 n) internal view returns (uint256 result, address ancestor) {
+    function _query(address helper, bytes memory input) private view returns (uint256) {
         if (helper.code.length == 0) revert MissingHelper(helper);
-        bytes memory input = abi.encodeWithSelector(ICallStack.readForInvoker.selector, n);
         // The fixed gas allowance also bounds return-data allocation in the helper.
         // forge-lint: disable-next-line(return-bomb)
         (bool success, bytes memory data) = helper.staticcall{gas: HELPER_GAS_LIMIT}(input);
         if (!success) revert HelperCallFailed(helper);
-        if (data.length != 64) revert InvalidHelperResponse(helper);
-
-        uint256 rawAncestor;
-        (result, rawAncestor) = abi.decode(data, (uint256, uint256));
-        if (rawAncestor > type(uint160).max) revert InvalidHelperResponse(helper);
-        // The range check above proves that the address cast cannot truncate.
-        // forge-lint: disable-next-line(unsafe-typecast)
-        ancestor = address(uint160(rawAncestor));
+        if (data.length != 32) revert InvalidHelperResponse(helper);
+        return abi.decode(data, (uint256));
     }
 }

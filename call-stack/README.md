@@ -1,6 +1,6 @@
 # MIP-18 call-stack introspection
 
-`CallStack` lets ordinary Solidity contracts read their current depth and ancestor callers. It uses internal `view` functions and one direct `STATICCALL` to a separately deployed, immutable, stateless Yul helper. Applications need stock Solidity, not a compiler fork. There is no canonical helper address.
+`CallStack` lets ordinary Solidity contracts read their current depth and ancestor callers through two internal `view` functions: `callStackDepth(helper)` and `callerN(helper, n)`. Each operation makes one direct `STATICCALL` to a separately deployed, immutable, stateless Yul helper. Applications need stock Solidity, not a compiler fork. There is no canonical helper address.
 
 ## Usage
 
@@ -18,25 +18,23 @@ contract Market {
         callStackHelper = helper;
     }
 
-    function context(uint256 n) external view returns (uint256 depth, address ancestor) {
-        return CallStack.read(callStackHelper, n);
-    }
-
     function currentDepth() external view returns (uint256) {
-        return CallStack.depth(callStackHelper);
+        return CallStack.callStackDepth(callStackHelper);
     }
 
     function ancestorCaller(uint256 n) external view returns (address) {
-        return CallStack.callerAt(callStackHelper, n);
+        return CallStack.callerN(callStackHelper, n);
     }
 }
 ```
 
-All library functions are internal. Neither calling the Solidity wrapper nor a Yul function creates a frame. The helper's external `STATICCALL` creates exactly one frame. Do not place a forwarding contract, external library, or proxy between the application and the helper. Application proxies are supported and their frames remain visible.
+The helper exposes `callStackDepth() returns (uint256)` and `callerN(uint256 n) returns (address)`. Both describe the invoking application and return exactly one ABI word. A depth query does not execute `CALLERN`. To obtain both values, call the two library functions separately; their helper calls execute sequentially at the same depth.
+
+All library functions are internal. Neither calling the Solidity wrapper nor a Yul function creates a frame. Each helper `STATICCALL` creates exactly one frame. Do not place a forwarding contract, external library, or proxy between the application and the helper. Application proxies are supported and their frames remain visible.
 
 If the helper executes at depth `D`, it returns application depth `D - 1`. For `n < D`, the ancestor is its native `CALLERN(n + 1)`; otherwise it returns zero. The bound is checked before addition, so `uint256.max` safely returns zero. `D == 0` reverts because there is no invoking application.
 
-For `user → router → market → helper`, the market gets depth `1`, `callerAt(helper, 0) == router`, `callerAt(helper, 1) == user`, and zero at index `2`. These are each frame's **CALLER values**, not code addresses. Delegatecalls can repeat caller values; no frames or duplicates are removed. Top-level application execution, including a transaction's constructor, has depth zero.
+For `user → router → market → helper`, the market gets depth `1`, `callerN(helper, 0) == router`, `callerN(helper, 1) == user`, and zero at index `2`. These are each frame's **CALLER values**, not code addresses. Delegatecalls can repeat caller values; no frames or duplicates are removed. Top-level application execution, including a transaction's constructor, has depth zero.
 
 ## Runtime support and pins
 
@@ -83,7 +81,7 @@ cargo +1.94.1 clippy --locked --manifest-path call-stack/runtime/Cargo.toml --al
 
 `artifacts/CallStack.json` and `artifacts/CallStack.unoptimized.json` contain initcode, runtime bytecode, source digest, compiler settings, and Keccak-256 runtime hashes. Test fixtures are generated under ignored `out/`; build outputs stay under ignored `runtime/target/`.
 
-The ten Rust tests deploy real helper initcode and stock-solc application bytecode into an in-memory VM. They cover top-level application calls, nested routers, multiple delegatecall proxies, transaction constructors, factory `CREATE`/`CREATE2`, last-valid/first-invalid/large/max indices, restored context after return and revert, direct helper rejection, bad calldata/value, missing code, failed calls, malformed and dirty-address responses, identity validation, and unsupported Ethereum/Monad runtimes. Both optimized and unoptimized helpers run; context cases also run with and without the observational inspector. The native standalone-Yul reference compares direct instructions with the adjusted helper results in the same frame. Traces verify two-gas instruction pricing and exactly one helper `STATICCALL` per combined wrapper read. No cheatcodes or mocked context values establish these results.
+The ten Rust tests deploy real helper initcode and stock-solc application bytecode into an in-memory VM. They cover top-level application calls, nested routers, multiple delegatecall proxies, transaction constructors, factory `CREATE`/`CREATE2`, last-valid/first-invalid/large/max indices, restored context after return and revert, direct helper rejection, bad calldata/value, missing code, failed calls, malformed and dirty-address responses, identity validation, and unsupported Ethereum/Monad runtimes. Both optimized and unoptimized helpers run; context cases also run with and without the observational inspector. The native standalone-Yul reference compares direct instructions with the adjusted helper results in the same frame. Traces verify two-gas instruction pricing, exactly one helper `STATICCALL` per operation, and that depth queries do not execute `CALLERN`. Both operations enforce 32-byte responses. No cheatcodes or mocked context values establish these results.
 
 ## Local deployment and identity
 
@@ -96,15 +94,15 @@ python3 call-stack/deploy.py --rpc-url http://127.0.0.1:8545
 
 The script accepts numeric loopback addresses only, sends a creation transaction, and verifies the resulting runtime byte-for-byte. It returns JSON containing the helper address, code hash, and transaction hash. Deployment can succeed on an unsupported VM because the constructor does not execute MIP-18; deployment success is **not** an activation check. Use a supporting development node to call through the wrapper. Do not use `eth_call` directly on the helper as an application-context read: it is a top-level invocation and reverts on a supporting VM.
 
-The optimized runtime is 99 bytes; its expected Keccak-256 hash is:
+The optimized runtime is 138 bytes; its expected Keccak-256 hash is:
 
 ```text
-0x834cf0edc80c8a7287345bdc0500c3d4025257f8ee905f66b44d4682b521973c
+0x11188db450f6bf253c64f447fa794256348f5ff22cb744654e0f2bb0354df20a
 ```
 
-`CallStack.validateHelper(helper)` compares `EXTCODEHASH` to `CallStack.HELPER_CODE_HASH`. Validate during construction or when changing configuration. `read`, `depth`, and `callerAt` check code presence but deliberately do not repeat the identity check. Successfully decoding an arbitrary contract's response does not establish its identity. The helper has no storage writes, external calls, upgrade mechanism, or self-destruct path.
+`CallStack.validateHelper(helper)` compares `EXTCODEHASH` to `CallStack.HELPER_CODE_HASH`. Validate during construction or when changing configuration. `callStackDepth` and `callerN` check code presence but deliberately do not repeat the identity check. Successfully decoding an arbitrary contract's response does not establish its identity. The helper has no storage writes, external calls, upgrade mechanism, or self-destruct path.
 
-The unoptimized runtime is 94 bytes with hash `0x0fcbaba1a6f1ee1f986d46b307a85cbb0b72041707de7233f29b0e71c90e0aa6`. It is a test variant; `validateHelper` accepts only the published optimized runtime.
+The unoptimized runtime is 172 bytes with hash `0x156daa5804c4f0a3a00554bdb0375afcc9dbb353693de4d2398cba0b9c288d84`. It is a test variant; `validateHelper` accepts only the published optimized runtime.
 
 ## Failures and gas
 
@@ -112,12 +110,14 @@ The unoptimized runtime is 94 bytes with hash `0x0fcbaba1a6f1ee1f986d46b307a85cb
 | --- | --- |
 | No helper code | `CallStack.MissingHelper(helper)` |
 | Helper reverts, halts, lacks gas, or cannot open another frame | `CallStack.HelperCallFailed(helper)` |
-| Return data is not exactly 64 bytes, or the address has nonzero upper bits | `CallStack.InvalidHelperResponse(helper)` |
+| Return data is not exactly 32 bytes, or a `callerN` response has nonzero upper address bits | `CallStack.InvalidHelperResponse(helper)` |
 | Identity check sees other code | `CallStack.UnexpectedHelperCode(helper)` |
-| Helper calldata is not exactly selector `8485ba60` plus one word, or carries value | `ICallStack.InvalidCalldata()` |
+| Unknown selector, incorrect calldata size, or attached value | `ICallStack.InvalidCalldata()` |
 | Helper executes as the top-level message | `ICallStack.NoInvoker()` |
 
 Out-of-range indices return a legitimate zero address. Failure never falls back to zero. Helper errors are mapped to `HelperCallFailed` by the wrapper; raw helper calls expose its own errors.
+
+`callStackDepth()` uses selector `ba3dbad8` and accepts exactly 4 calldata bytes. `callerN(uint256)` uses selector `0c147986` and accepts exactly 36 bytes. Neither entry point accepts value or trailing data.
 
 The wrapper forwards at most **2,000 execution gas**. Unsupported instructions may consume all forwarded gas; older Monad revisions and Ethereum tests verify that the parent retains gas to return the explicit error. The allowance also bounds an untrusted callee's return-data allocation. Account-access costs, ABI handling, copying and the caller's memory expansion are outside that allowance. EIP-150 or very low available gas can further reduce forwarding, and the parent still needs enough gas to handle failure.
 
@@ -125,12 +125,10 @@ Measured using the pinned `MonadNext` runtime and optimized Solidity fixtures, a
 
 | Expression | Optimized helper, cold | Optimized helper, warm | Unoptimized helper, cold | Unoptimized helper, warm |
 | --- | ---: | ---: | ---: | ---: |
-| `read(helper, 0)` | 11,145 | 1,143 | 11,132 | 1,130 |
-| `depth(helper)` | 11,177 | 1,175 | 11,164 | 1,162 |
-| `callerAt(helper, 0)` | 11,183 | 1,181 | 11,170 | 1,168 |
-| Separate `depth` and `callerAt` | 12,351 | 2,350 | 12,325 | 2,324 |
+| `callStackDepth(helper)` | 10,982 | 980 | 11,002 | 1,000 |
+| `callerN(helper, 0)` | 11,201 | 1,200 | 11,220 | 1,219 |
 
-The helper's own valid-index execution costs 167 gas optimized and 154 unoptimized; all tested helper index paths use under 300 gas. The optimizer is slightly larger and more expensive for this tiny helper. The 2,000-gas allowance leaves ample room for these fixed artifacts, not a guarantee for future replacements or gas schedules. Re-run `representative_wrapper_gas` after any compiler, runtime or wrapper change.
+The helper itself uses 136 gas for depth and 206 gas for a valid ancestor index in the optimized build, or 156 and 225 gas respectively in the unoptimized build. All tested helper index paths use under 300 gas. The 2,000-gas allowance leaves ample room for these fixed artifacts, not a guarantee for future replacements or gas schedules. Re-run `representative_wrapper_gas` after any compiler, runtime or wrapper change.
 
 ## Limits
 
