@@ -12,6 +12,12 @@ forge install category-labs/monad-std
 
 ## Contracts
 
+### `CallStack`
+
+[`src/CallStack.sol`](./src/CallStack.sol) provides internal `view` functions `depth(helper)`, `callerAt(helper, n)`, and `read(helper, n)` for [MIP-18](https://mips.monad.xyz/MIPs/MIP-18). A separately deployed, stateless Yul helper contains the native instructions; applications compile with stock Solidity.
+
+This requires a VM with MIP-18 enabled. There is no canonical helper address. See the [call-stack package](./call-stack/README.md) for usage, reproducible artifacts, local deployment, runtime tests, gas measurements, and limitations.
+
 ### `IMonadStaking`
 
 [`src/interfaces/IMonadStaking.sol`](./src/interfaces/IMonadStaking.sol) defines the public interface for the staking precompile at `0x1000`.

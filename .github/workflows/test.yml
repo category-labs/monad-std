@@ -35,3 +35,35 @@ jobs:
 
       - name: Run Forge tests
         run: forge test -vvv
+
+  call-stack:
+    name: MIP-18 real-runtime tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.8.5
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.94.1 --profile minimal --component rustfmt --component clippy
+
+      - name: Install pinned stock solc
+        run: forge build --use 0.8.35
+
+      - name: Check artifacts and compile fixtures
+        run: SOLC="$HOME/.svm/0.8.35/solc-0.8.35" python3 call-stack/build.py --check --fixtures
+
+      - name: Check runtime harness
+        run: |
+          cargo +1.94.1 fmt --manifest-path call-stack/runtime/Cargo.toml -- --check
+          cargo +1.94.1 clippy --locked --manifest-path call-stack/runtime/Cargo.toml --all-targets -- -D warnings
+
+      - name: Exercise MIP-18 and report gas
+        run: cargo +1.94.1 test --locked --manifest-path call-stack/runtime/Cargo.toml -- --nocapture
