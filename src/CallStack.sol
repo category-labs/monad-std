@@ -28,13 +28,13 @@ library CallStack {
 
     /// @notice Returns the executing application's zero-based call depth.
     function callStackDepth(address helper) internal view returns (uint256) {
-        return _query(helper, abi.encodeWithSelector(ICallStack.callStackDepth.selector));
+        return _query(helper, ICallStack.callStackDepth.selector, 0, 4);
     }
 
     /// @notice Returns the CALLER value n frames above the executing application, or zero.
     /// @dev callerN(helper, 0) equals msg.sender. Delegatecalls may repeat caller values.
     function callerN(address helper, uint256 n) internal view returns (address) {
-        uint256 ancestor = _query(helper, abi.encodeWithSelector(ICallStack.callerN.selector, n));
+        uint256 ancestor = _query(helper, ICallStack.callerN.selector, n, 36);
         if (ancestor > type(uint160).max) revert InvalidHelperResponse(helper);
         // The range check above proves that the address cast cannot truncate.
         // forge-lint: disable-next-line(unsafe-typecast)
@@ -44,13 +44,24 @@ library CallStack {
     /// @dev Executes one operation with a bounded STATICCALL and a single-word response.
     /// Validate the helper's identity when configuring it. A decodable response is not proof
     /// of identity. Unsupported opcodes, exhausted gas and other call failures revert explicitly.
-    function _query(address helper, bytes memory input) private view returns (uint256) {
+    function _query(address helper, bytes4 selector, uint256 n, uint256 inputSize)
+        private
+        view
+        returns (uint256 result)
+    {
         if (helper.code.length == 0) revert MissingHelper(helper);
-        // The fixed gas allowance also bounds return-data allocation in the helper.
-        // forge-lint: disable-next-line(return-bomb)
-        (bool success, bytes memory data) = helper.staticcall{gas: HELPER_GAS_LIMIT}(input);
+        bool success;
+        uint256 outputSize;
+        // Both buffers fit in scratch space (0x00..0x3f), preserving Solidity's memory pointers.
+        assembly ("memory-safe") {
+            // A bytes4 selector is left-aligned; the argument follows its first four bytes.
+            mstore(0, selector)
+            mstore(4, n)
+            success := staticcall(HELPER_GAS_LIMIT, helper, 0, inputSize, 0, 32)
+            outputSize := returndatasize()
+            result := mload(0)
+        }
         if (!success) revert HelperCallFailed(helper);
-        if (data.length != 32) revert InvalidHelperResponse(helper);
-        return abi.decode(data, (uint256));
+        if (outputSize != 32) revert InvalidHelperResponse(helper);
     }
 }

@@ -58,6 +58,20 @@ contract Application {
     }
 }
 
+contract MemoryProbe {
+    function observe(address helper, uint256 n, bytes memory payload)
+        external
+        view
+        returns (uint256 depth, address ancestor, bytes memory beforeQuery, bytes memory afterQuery, bytes memory empty)
+    {
+        beforeQuery = abi.encode(payload);
+        depth = CallStack.callStackDepth(helper);
+        ancestor = CallStack.callerN(helper, n);
+        afterQuery = abi.encode(payload);
+        return (depth, ancestor, beforeQuery, afterQuery, empty);
+    }
+}
+
 contract Router {
     function route(address application, address helper, uint256 n) external view returns (uint256, address) {
         return Application(application).observe(helper, n);

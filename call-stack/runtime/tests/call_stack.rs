@@ -290,6 +290,48 @@ fn top_level_wrapper_has_exactly_one_helper_frame() {
 }
 
 #[test]
+fn queries_preserve_solidity_memory() {
+    for optimized in [false, true] {
+        for inspected in [false, true] {
+            let mut vm = Runtime::new(optimized, inspected);
+            let probe = vm.deploy_fixture("MemoryProbe", &[]);
+            for len in [0_usize, 1, 31, 32, 33, 256, 1024] {
+                let mut payload = (0..len).map(|i| (i % 251 + 1) as u8).collect::<Vec<_>>();
+                payload.resize(len.div_ceil(32) * 32, 0);
+                let mut encoded = encode_words(&[U256::from(32), U256::from(len)]);
+                encoded.extend(&payload);
+                for n in [U256::ZERO, U256::from(1), U256::MAX] {
+                    let mut data = calldata(
+                        "observe(address,uint256,bytes)",
+                        &[address_word(vm.helper), n, U256::from(96)],
+                    );
+                    data.extend(&encoded[32..]);
+                    let (result, _) = vm.call(probe, data);
+                    assert!(result.is_success(), "{result:?}");
+
+                    // Check both allocations and the default empty bytes value, which uses
+                    // Solidity's zero slot, through the externally returned ABI encoding.
+                    let allocation_size = 32 + encoded.len();
+                    let mut want = encode_words(&[
+                        U256::ZERO,
+                        expected(&[USER], n)[1],
+                        U256::from(160),
+                        U256::from(160 + allocation_size),
+                        U256::from(160 + 2 * allocation_size),
+                    ]);
+                    for _ in 0..2 {
+                        want.extend(encode_words(&[U256::from(encoded.len())]));
+                        want.extend(&encoded);
+                    }
+                    want.extend(encode_words(&[U256::ZERO]));
+                    assert_eq!(result.output().unwrap().as_ref(), want);
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn router_proxy_and_repeated_delegate_callers() {
     for optimized in [false, true] {
         for inspected in [false, true] {

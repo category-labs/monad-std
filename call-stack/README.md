@@ -81,7 +81,7 @@ cargo +1.94.1 clippy --locked --manifest-path call-stack/runtime/Cargo.toml --al
 
 `artifacts/CallStack.json` and `artifacts/CallStack.unoptimized.json` contain initcode, runtime bytecode, source digest, compiler settings, and Keccak-256 runtime hashes. Test fixtures are generated under ignored `out/`; build outputs stay under ignored `runtime/target/`.
 
-The ten Rust tests deploy real helper initcode and stock-solc application bytecode into an in-memory VM. They cover top-level application calls, nested routers, multiple delegatecall proxies, transaction constructors, factory `CREATE`/`CREATE2`, last-valid/first-invalid/large/max indices, restored context after return and revert, direct helper rejection, bad calldata/value, missing code, failed calls, malformed and dirty-address responses, identity validation, and unsupported Ethereum/Monad runtimes. Both optimized and unoptimized helpers run; context cases also run with and without the observational inspector. The native standalone-Yul reference compares direct instructions with the adjusted helper results in the same frame. Traces verify two-gas instruction pricing, exactly one helper `STATICCALL` per operation, and that depth queries do not execute `CALLERN`. Both operations enforce 32-byte responses. No cheatcodes or mocked context values establish these results.
+The eleven Rust tests deploy real helper initcode and stock-solc application bytecode into an in-memory VM. They cover top-level application calls, nested routers, multiple delegatecall proxies, transaction constructors, factory `CREATE`/`CREATE2`, last-valid/first-invalid/large/max indices, restored context after return and revert, direct helper rejection, bad calldata/value, missing code, failed calls, malformed and dirty-address responses, identity validation, preservation of Solidity memory around queries, and unsupported Ethereum/Monad runtimes. Both optimized and unoptimized helpers run; context cases also run with and without the observational inspector. The native standalone-Yul reference compares direct instructions with the adjusted helper results in the same frame. Traces verify two-gas instruction pricing, exactly one helper `STATICCALL` per operation, and that depth queries do not execute `CALLERN`. Both operations enforce 32-byte responses. No cheatcodes or mocked context values establish these results.
 
 ## Local deployment and identity
 
@@ -119,14 +119,16 @@ Out-of-range indices return a legitimate zero address. Failure never falls back 
 
 `callStackDepth()` uses selector `ba3dbad8` and accepts exactly 4 calldata bytes. `callerN(uint256)` uses selector `0c147986` and accepts exactly 36 bytes. Neither entry point accepts value or trailing data.
 
-The wrapper forwards at most **2,000 execution gas**. Unsupported instructions may consume all forwarded gas; older Monad revisions and Ethereum tests verify that the parent retains gas to return the explicit error. The allowance also bounds an untrusted callee's return-data allocation. Account-access costs, ABI handling, copying and the caller's memory expansion are outside that allowance. EIP-150 or very low available gas can further reduce forwarding, and the parent still needs enough gas to handle failure.
+The wrapper encodes its 4-byte or 36-byte request in Solidity's scratch memory and copies at most 32 response bytes into the same buffer. It checks the full return-data length and rejects any response that is not exactly 32 bytes, without allocating a dynamic buffer. The free-memory pointer and zero slot remain untouched.
+
+The wrapper forwards at most **2,000 execution gas**; unused forwarded gas is returned to the caller. Unsupported instructions may consume all forwarded gas; older Monad revisions and Ethereum tests verify that the parent retains gas to return the explicit error. Account-access costs, ABI handling, copying and the caller's memory expansion are outside that allowance. EIP-150 or very low available gas can further reduce forwarding, and the parent still needs enough gas to handle failure.
 
 Measured using the pinned `MonadNext` runtime and optimized Solidity fixtures, at index zero. Values are `gasleft()` deltas around the actual wrapper expressions, including measurement and ABI/memory overhead, excluding transaction intrinsic gas and outer dispatch. “Cold” is the first helper access in a transaction; “warm” repeats it in the same frame. These are execution costs, not Monad receipt fees (which charge the transaction gas limit).
 
 | Expression | Optimized helper, cold | Optimized helper, warm | Unoptimized helper, cold | Unoptimized helper, warm |
 | --- | ---: | ---: | ---: | ---: |
-| `callStackDepth(helper)` | 10,982 | 980 | 11,002 | 1,000 |
-| `callerN(helper, 0)` | 11,201 | 1,200 | 11,220 | 1,219 |
+| `callStackDepth(helper)` | 10,577 | 577 | 10,597 | 597 |
+| `callerN(helper, 0)` | 10,713 | 713 | 10,732 | 732 |
 
 The helper itself uses 136 gas for depth and 206 gas for a valid ancestor index in the optimized build, or 156 and 225 gas respectively in the unoptimized build. All tested helper index paths use under 300 gas. The 2,000-gas allowance leaves ample room for these fixed artifacts, not a guarantee for future replacements or gas schedules. Re-run `representative_wrapper_gas` after any compiler, runtime or wrapper change.
 
